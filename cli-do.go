@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
+	"github.com/aquilax/truncate"
 	"github.com/go-resty/resty/v2"
+	"github.com/rodaine/table"
 	"github.com/urfave/cli/v2"
 )
 
@@ -35,12 +39,17 @@ type Todos struct {
 }
 
 type Todo struct {
-	Id        int    `json:"id"`
-	Subject   string `json:"name"`
-	Body      string `json:"body"`
-	DueDate   string `json:"due_date"`
-	Completed bool   `json:"completed"`
-	PastDue   bool   `json:"past_due"`
+	Id        string     `json:"id"`
+	Subject   string     `json:"subject"`
+	Ticket    int        `json:"ticket"`
+	Body      string     `json:"body"`
+	DueDate   *time.Time `json:"due_date"`
+	Completed bool       `json:"completed"`
+	PastDue   bool       `json:"past_due"`
+}
+
+type CreateTodo struct {
+	Todo Todo `json:"todo"`
 }
 
 type Projects struct {
@@ -48,34 +57,70 @@ type Projects struct {
 }
 
 type Project struct {
-	Id          int    `json:"id"`
+	Id          string `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Ticket      int    `json:"ticket"`
 	Todos       []Todo `json:"todos"`
 }
 
-func GetConfig() Config {
-	var config Config
-
-	byteValue, _ := os.ReadFile("config.json")
-	json.Unmarshal(byteValue, &config)
-
-	return config
+type DirectorySettings struct {
+	ProjectId string `json:"project_id"`
 }
 
-func GetAuth() Auth {
+func GetConfig() (Config, error) {
+	var config Config
+
+	homeDir, err := os.UserHomeDir()
+
+	if err != nil {
+		return config, err
+	} else {
+		var path = filepath.Join(homeDir, ".config", "cli-do", "config.json")
+		byteValue, _ := os.ReadFile(path)
+		json.Unmarshal(byteValue, &config)
+
+		return config, nil
+	}
+}
+
+func GetAuth() (Auth, error) {
 	var auth Auth
 
-	byteValue, _ := os.ReadFile(".cli-do")
+	homeDir, err := os.UserHomeDir()
+
+	if err != nil {
+		fmt.Println("Please log back in.")
+		return auth, err
+	}
+
+	var path = filepath.Join(homeDir, ".config", "cli-do", "auth.json")
+	byteValue, _ := os.ReadFile(path)
 	json.Unmarshal(byteValue, &auth)
 
-	return auth
+	return auth, nil
 }
 
 func main() {
 	app := &cli.App{
-		Name:  "cli-do",
-		Usage: "Interact with cli-do API",
+		Name:    "cli-do",
+		Usage:   "A CLI for CLI Do",
+		Version: "0.1.0",
+		Authors: []*cli.Author{
+			{
+				Name:  "Reed",
+				Email: "support@cli-do.com",
+			},
+		},
+		Compiled:             time.Now(),
+		EnableBashCompletion: true,
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "project",
+				Aliases: []string{"p"},
+				Usage:   "Project ID",
+			},
+		},
 		Commands: []*cli.Command{
 			{
 				Name:    "login",
@@ -86,7 +131,7 @@ func main() {
 			{
 				Name:    "list",
 				Aliases: []string{"ls"},
-				Usage:   "List objects",
+				Usage:   "List projects and todos",
 				Subcommands: []*cli.Command{
 					{
 						Name:     "projects",
@@ -100,14 +145,48 @@ func main() {
 						Category: "List",
 						Aliases:  []string{"t"},
 						Usage:    "List todos",
+						Action:   HandleTodosList,
+					},
+				},
+			},
+			{
+				Name:    "todo",
+				Aliases: []string{"t"},
+				Usage:   "Todo operations",
+				Subcommands: []*cli.Command{
+					{
+						Name:      "get",
+						ArgsUsage: "<ticket>",
+						Aliases:   []string{"g"},
+						Action:    HandleGetTodo,
+					},
+					{
+						Name:    "create",
+						Aliases: []string{"c"},
 						Flags: []cli.Flag{
 							&cli.StringFlag{
-								Name:    "project",
-								Aliases: []string{"p"},
-								Usage:   "Project name",
+								Name:    "subject",
+								Aliases: []string{"s"},
+								Usage:   "Subject of the todo",
+							},
+							&cli.StringFlag{
+								Name:    "body",
+								Aliases: []string{"b"},
+								Usage:   "Body of the todo",
+							},
+							&cli.TimestampFlag{
+								Name:    "due-date",
+								Aliases: []string{"d"},
+								Usage:   "Due date of the todo",
+								Layout:  "2006-01-02",
 							},
 						},
-						Action: HandleTodosList,
+						Action: HandleCreateTodo,
+					},
+					{
+						Name:    "complete",
+						Aliases: []string{"co"},
+						Action:  HandleCompleteTodo,
 					},
 				},
 			},
@@ -124,8 +203,9 @@ func main() {
 }
 
 func HandleProjectList(ctx *cli.Context) error {
-	var config Config = GetConfig()
-	var auth Auth = GetAuth()
+	var config Config
+	config, _ = GetConfig()
+	var auth, _ = GetAuth()
 
 	resp, err := resty.New().R().
 		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
@@ -137,8 +217,6 @@ func HandleProjectList(ctx *cli.Context) error {
 		return err
 	}
 
-	fmt.Println(resp)
-
 	var projects Projects
 	errParseProjects := json.Unmarshal([]byte(resp.String()), &projects)
 
@@ -147,22 +225,167 @@ func HandleProjectList(ctx *cli.Context) error {
 		return nil
 	}
 
-	fmt.Println("Projects:")
+	var tbl = table.New("ID", "Name")
+
 	for _, project := range projects.Projects {
-		fmt.Println(project.Name)
+		tbl.AddRow(project.Ticket, project.Name)
 	}
+
+	tbl.Print()
 
 	return nil
 }
 
 func HandleTodosList(ctx *cli.Context) error {
-	var projectId = ctx.String("project")
-	fmt.Println("Project ID:", projectId)
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+	var directorySettings = ReadDirectorySettingsFile(ctx)
+
+	if directorySettings.ProjectId == "" {
+		fmt.Println("Project ID is required or init a new project in current directory.")
+		return nil
+	}
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		Get(fmt.Sprintf("%s/projects/%s", config.Endpoint, directorySettings.ProjectId))
+
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
+
+	if resp.StatusCode() == 404 {
+		fmt.Println("Project not found. Please check the project ID.")
+		return nil
+	}
+
+	var project Project
+	errParseProject := json.Unmarshal([]byte(resp.String()), &project)
+	if errParseProject != nil {
+		fmt.Println("Error:", errParseProject)
+		return errParseProject
+	}
+
+	var tbl = table.New("Ticket", "Subject", "Body", "Due Date", "Completed", "Past Due")
+
+	for _, todo := range project.Todos {
+		var dueDate string
+		if todo.DueDate == nil {
+			dueDate = "-"
+		} else {
+			dueDate = todo.DueDate.String()
+		}
+		var trunacatedSubject = truncate.Truncate(todo.Subject, 24, "...", truncate.PositionEnd)
+		var truncatedBody = truncate.Truncate(todo.Body, 32, "...", truncate.PositionEnd)
+		tbl.AddRow(todo.Ticket, trunacatedSubject, truncatedBody, dueDate, todo.Completed, todo.PastDue)
+	}
+
+	tbl.Print()
+
+	return nil
+}
+
+func HandleGetTodo(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+	var directorySettings = ReadDirectorySettingsFile(ctx)
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		Get(fmt.Sprintf("%s/projects/%s/todos/%s", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+
+	if err != nil {
+		fmt.Println("Error:", err)
+		return err
+	}
+
+	if resp.StatusCode() == 404 {
+		fmt.Println("Todo not found. Please check the Ticket number and project ID.")
+		return nil
+	}
+
+	var todo Todo
+
+	errParseTodo := json.Unmarshal([]byte(resp.String()), &todo)
+
+	if errParseTodo != nil {
+		fmt.Println("Error:", errParseTodo)
+		return errParseTodo
+	}
+
+	fmt.Println("Ticket:", todo.Ticket)
+	if todo.DueDate != nil {
+		fmt.Println("Due Date:", todo.DueDate)
+	}
+	fmt.Println("Completed:", todo.Completed)
+	fmt.Println("Subject:", todo.Subject)
+	fmt.Println("Body:", todo.Body)
+	return nil
+}
+
+func HandleCreateTodo(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+	var directorySettings = ReadDirectorySettingsFile(ctx)
+
+	var createTodo = CreateTodo{
+		Todo: Todo{
+			Subject: ctx.String("subject"),
+			Body:    ctx.String("body"),
+			DueDate: ctx.Timestamp("due-date"),
+		},
+	}
+
+	var createTodoJson, _ = json.Marshal(createTodo)
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		SetBody(createTodoJson).
+		Post(fmt.Sprintf("%s/projects/%s/todos", config.Endpoint, directorySettings.ProjectId))
+
+	if err != nil {
+		return nil
+	}
+
+	if resp.StatusCode() == 200 {
+		fmt.Println("Todo created successfully!")
+	}
+
+	return nil
+}
+
+func HandleCompleteTodo(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+	var directorySettings = ReadDirectorySettingsFile(ctx)
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		Post(fmt.Sprintf("%s/projects/%s/todos/%s/complete", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+
+	if err != nil {
+		return nil
+	}
+
+	if resp.StatusCode() == 404 {
+		fmt.Println("Todo not found. Please check the Ticket number and project ID.")
+	}
+
+	if resp.StatusCode() == 200 {
+		fmt.Println("Todo completed successfully!")
+	}
+
 	return nil
 }
 
 func HandleLogin(ctx *cli.Context) error {
-	var config = GetConfig()
+	var config Config
+	config, _ = GetConfig()
 
 	if _, err := os.Stat("./.cli-do"); errors.Is(err, os.ErrNotExist) {
 		err := LoginUser(config)
@@ -219,4 +442,19 @@ func LoginUser(config Config) error {
 	json.Unmarshal([]byte(resp.String()), &auth)
 
 	return nil
+}
+
+func ReadDirectorySettingsFile(ctx *cli.Context) DirectorySettings {
+	var directorySettings DirectorySettings = DirectorySettings{
+		ProjectId: ctx.String("project"),
+	}
+	var wd, _ = os.Getwd()
+	var path = filepath.Join(wd, ".cli-do-project")
+
+	if _, err := os.Stat(path); err == nil {
+		byteValue, _ := os.ReadFile(path)
+		json.Unmarshal(byteValue, &directorySettings)
+	}
+
+	return directorySettings
 }
