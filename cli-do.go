@@ -387,7 +387,10 @@ func HandleLogin(ctx *cli.Context) error {
 	var config Config
 	config, _ = GetConfig()
 
-	if _, err := os.Stat("./.cli-do"); errors.Is(err, os.ErrNotExist) {
+	var homeDir, _ = os.UserHomeDir()
+	var path = filepath.Join(homeDir, ".config", "cli-do", "auth.json")
+
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		err := LoginUser(config)
 
 		if err != nil {
@@ -431,7 +434,14 @@ func LoginUser(config Config) error {
 	fmt.Printf("Response Info:\n")
 	fmt.Println("Body:\n", resp)
 
-	saveCliDoConfigError := os.WriteFile("./.cli-do", []byte(resp.String()), 0644)
+	homeDir, err := os.UserHomeDir()
+	var path = filepath.Join(homeDir, ".config", "cli-do")
+
+	_ = os.MkdirAll(path, os.ModeDir)
+
+	path = filepath.Join(path, "auth.json")
+
+	saveCliDoConfigError := os.WriteFile(path, []byte(resp.String()), 0644)
 
 	if saveCliDoConfigError != nil {
 		fmt.Println("Error:", err)
