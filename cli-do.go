@@ -65,6 +65,10 @@ type Project struct {
 	Todos       []Todo `json:"todos"`
 }
 
+type CreateProject struct {
+	Project Project `json:"project"`
+}
+
 type DirectorySettings struct {
 	ProjectId string `json:"project_id"`
 }
@@ -195,6 +199,30 @@ func main() {
 						Name:    "complete",
 						Aliases: []string{"co"},
 						Action:  HandleCompleteTodo,
+					},
+				},
+			},
+			{
+				Name:    "project",
+				Usage:   "Project operations",
+				Aliases: []string{"p"},
+				Subcommands: []*cli.Command{
+					{
+						Name:    "new",
+						Aliases: []string{"n"},
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:    "name",
+								Aliases: []string{"n"},
+								Usage:   "Name of the project",
+							},
+							&cli.StringFlag{
+								Name:    "description",
+								Aliases: []string{"d"},
+								Usage:   "Description of the project",
+							},
+						},
+						Action: HandleProjectNew,
 					},
 				},
 			},
@@ -356,7 +384,7 @@ func HandleCreateTodo(ctx *cli.Context) error {
 		Post(fmt.Sprintf("%s/projects/%s/todos", config.Endpoint, directorySettings.ProjectId))
 
 	if err != nil {
-		return nil
+		return err
 	}
 
 	if resp.StatusCode() == 200 {
@@ -389,6 +417,37 @@ func HandleCompleteTodo(ctx *cli.Context) error {
 	}
 
 	return nil
+}
+
+func HandleProjectNew(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+
+	var createProject = CreateProject{
+		Project: Project{
+			Name:        ctx.String("name"),
+			Description: ctx.String("description"),
+		},
+	}
+
+	var createProjectJson, _ = json.Marshal(createProject)
+
+	rest, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		SetBody(createProjectJson).
+		Post(fmt.Sprintf("%s/projects", config.Endpoint))
+
+	if err != nil {
+		return err
+	}
+
+	if rest.StatusCode() == 200 {
+		fmt.Println("Project created successfully!")
+	}
+
+	return nil
+
 }
 
 func HandleLogin(ctx *cli.Context) error {
