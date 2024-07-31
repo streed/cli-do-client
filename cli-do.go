@@ -12,6 +12,7 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/rodaine/table"
 	"github.com/urfave/cli/v2"
+	"golang.org/x/term"
 )
 
 type Config struct {
@@ -126,7 +127,14 @@ func main() {
 				Name:    "login",
 				Aliases: []string{"l"},
 				Usage:   "Login to cli-do",
-				Action:  HandleLogin,
+				Flags: []cli.Flag{
+					&cli.BoolFlag{
+						Name:    "force",
+						Usage:   "Force to refresh login if already logged in",
+						Aliases: []string{"f"},
+					},
+				},
+				Action: HandleLogin,
 			},
 			{
 				Name:    "list",
@@ -389,8 +397,9 @@ func HandleLogin(ctx *cli.Context) error {
 
 	var homeDir, _ = os.UserHomeDir()
 	var path = filepath.Join(homeDir, ".config", "cli-do", "auth.json")
+	_, err := os.Stat(path)
 
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) || ctx.Bool("force") {
 		err := LoginUser(config)
 
 		if err != nil {
@@ -404,18 +413,17 @@ func HandleLogin(ctx *cli.Context) error {
 }
 
 func LoginUser(config Config) error {
-	var auth Auth
 	var email string
-	var password string
+	var password []byte
 
 	fmt.Println("Login to cli-do")
 	fmt.Print("Email: ")
 	fmt.Scan(&email)
 
 	fmt.Print("Password: ")
-	fmt.Scan(&password)
+	password, _ = term.ReadPassword(1)
 
-	fmt.Print("Logging in...")
+	fmt.Println("Logging in...")
 
 	var endpoint = fmt.Sprintf("%s/login", config.Endpoint)
 
@@ -423,18 +431,14 @@ func LoginUser(config Config) error {
 	resp, err := client.R().
 		EnableTrace().
 		SetHeader("Content-Type", "application/json").
-		SetBody(Login{Email: email, Password: password, ClientId: config.ClientId}).
+		SetBody(Login{Email: email, Password: string(password[:]), ClientId: config.ClientId}).
 		Post(endpoint)
 
 	if err != nil {
-		fmt.Println("Error:", err)
 		return err
 	}
 
-	fmt.Printf("Response Info:\n")
-	fmt.Println("Body:\n", resp)
-
-	homeDir, err := os.UserHomeDir()
+	homeDir, _ := os.UserHomeDir()
 	var path = filepath.Join(homeDir, ".config", "cli-do")
 
 	_ = os.MkdirAll(path, os.ModeDir)
@@ -444,12 +448,10 @@ func LoginUser(config Config) error {
 	saveCliDoConfigError := os.WriteFile(path, []byte(resp.String()), 0644)
 
 	if saveCliDoConfigError != nil {
-		fmt.Println("Error:", err)
+		return nil
 	}
 
-	fmt.Printf("Welcome to cli-do!\n")
-
-	json.Unmarshal([]byte(resp.String()), &auth)
+	fmt.Println("Welcome to cli-do!")
 
 	return nil
 }
