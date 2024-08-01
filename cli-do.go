@@ -141,31 +141,15 @@ func main() {
 				Action: HandleLogin,
 			},
 			{
-				Name:    "list",
-				Aliases: []string{"ls"},
-				Usage:   "List projects and todos",
-				Subcommands: []*cli.Command{
-					{
-						Name:     "projects",
-						Category: "List",
-						Aliases:  []string{"p"},
-						Usage:    "List projects",
-						Action:   HandleProjectList,
-					},
-					{
-						Name:     "todos",
-						Category: "List",
-						Aliases:  []string{"t"},
-						Usage:    "List todos",
-						Action:   HandleTodosList,
-					},
-				},
-			},
-			{
 				Name:    "todo",
 				Aliases: []string{"t"},
 				Usage:   "Todo operations",
 				Subcommands: []*cli.Command{
+					{
+						Name:    "list",
+						Aliases: []string{"ls"},
+						Action:  HandleTodosList,
+					},
 					{
 						Name:      "get",
 						ArgsUsage: "<ticket>",
@@ -173,8 +157,8 @@ func main() {
 						Action:    HandleGetTodo,
 					},
 					{
-						Name:    "create",
-						Aliases: []string{"c"},
+						Name:    "new",
+						Aliases: []string{"n"},
 						Flags: []cli.Flag{
 							&cli.StringFlag{
 								Name:    "subject",
@@ -196,6 +180,11 @@ func main() {
 						Action: HandleCreateTodo,
 					},
 					{
+						Name:    "archive",
+						Aliases: []string{"a"},
+						Action:  HandleArchiveTodo,
+					},
+					{
 						Name:    "complete",
 						Aliases: []string{"co"},
 						Action:  HandleCompleteTodo,
@@ -207,6 +196,11 @@ func main() {
 				Usage:   "Project operations",
 				Aliases: []string{"p"},
 				Subcommands: []*cli.Command{
+					{
+						Name:    "init",
+						Aliases: []string{"i"},
+						Action:  HandleInitProjectDirectory,
+					},
 					{
 						Name:    "new",
 						Aliases: []string{"n"},
@@ -224,11 +218,22 @@ func main() {
 						},
 						Action: HandleProjectNew,
 					},
+					{
+						Name:    "list",
+						Aliases: []string{"ls"},
+						Action:  HandleProjectList,
+					},
+					{
+						Name:      "archive",
+						Aliases:   []string{"a"},
+						ArgsUsage: "<project_id>",
+						Action:    HandleProjectArchive,
+					},
 				},
 			},
 		},
 		Action: func(*cli.Context) error {
-			fmt.Println("Hello, cli-do!")
+			fmt.Println("Hello, cli-do! Run 'cli-do help' for more information.")
 			return nil
 		},
 	}
@@ -272,13 +277,50 @@ func HandleProjectList(ctx *cli.Context) error {
 	return nil
 }
 
+func HandleInitProjectDirectory(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+
+	var directorySettings = ReadDirectorySettingsFile(ctx)
+
+	if directorySettings.ProjectId != "" {
+		fmt.Println("Project directory already initialized!")
+		return nil
+	}
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		Get(fmt.Sprintf("%s/projects/%s", config.Endpoint, ctx.Args().First()))
+
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode() == 404 {
+		fmt.Println("Project not found. Please check the project ID.")
+	}
+
+	if resp.StatusCode() == 200 {
+		var wd, _ = os.Getwd()
+		var path = filepath.Join(wd, ".cli-do-project")
+
+		_ = os.WriteFile(path, []byte(fmt.Sprintf(`{"project_id": "%s"}`, ctx.Args().First())), 0644)
+
+		fmt.Println("Project directory initialized successfully!")
+	} else {
+		fmt.Println("Project not found. Please check the project ID.")
+	}
+
+	return nil
+}
+
 func HandleTodosList(ctx *cli.Context) error {
 	var config, _ = GetConfig()
 	var auth, _ = GetAuth()
 	var directorySettings = ReadDirectorySettingsFile(ctx)
 
 	if directorySettings.ProjectId == "" {
-		fmt.Println("Project ID is required or init a new project in current directory.")
 		return nil
 	}
 
@@ -394,6 +436,30 @@ func HandleCreateTodo(ctx *cli.Context) error {
 	return nil
 }
 
+func HandleArchiveTodo(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+	var directorySettings = ReadDirectorySettingsFile(ctx)
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		Delete(fmt.Sprintf("%s/projects/%s/todos/%s", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode() == 404 {
+		fmt.Println("Todo not found. Please check the Ticket number and project ID.")
+	}
+
+	if resp.StatusCode() == 200 {
+		fmt.Println("Todo archived successfully!")
+	}
+
+	return nil
+}
+
 func HandleCompleteTodo(ctx *cli.Context) error {
 	var config, _ = GetConfig()
 	var auth, _ = GetAuth()
@@ -447,7 +513,29 @@ func HandleProjectNew(ctx *cli.Context) error {
 	}
 
 	return nil
+}
 
+func HandleProjectArchive(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		Delete(fmt.Sprintf("%s/projects/%s", config.Endpoint, ctx.Args().First()))
+
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode() == 404 {
+		fmt.Println("Project not found. Please check the project ID.")
+	}
+
+	if resp.StatusCode() == 200 {
+		fmt.Println("Project archived successfully!")
+	}
+
+	return nil
 }
 
 func HandleLogin(ctx *cli.Context) error {
@@ -522,9 +610,16 @@ func ReadDirectorySettingsFile(ctx *cli.Context) DirectorySettings {
 	var wd, _ = os.Getwd()
 	var path = filepath.Join(wd, ".cli-do-project")
 
+	if directorySettings.ProjectId != "" {
+		fmt.Println("Using project ID from flag.")
+		return directorySettings
+	}
+
 	if _, err := os.Stat(path); err == nil {
 		byteValue, _ := os.ReadFile(path)
 		json.Unmarshal(byteValue, &directorySettings)
+	} else {
+		fmt.Println("Project flag not provided and project directory not initialized.")
 	}
 
 	return directorySettings
