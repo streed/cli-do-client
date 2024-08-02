@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/aquilax/truncate"
@@ -50,6 +54,10 @@ type Todo struct {
 }
 
 type CreateTodo struct {
+	Todo Todo `json:"todo"`
+}
+
+type UpdateTodo struct {
 	Todo Todo `json:"todo"`
 }
 
@@ -155,6 +163,11 @@ func main() {
 						ArgsUsage: "<ticket>",
 						Aliases:   []string{"g"},
 						Action:    HandleGetTodo,
+					},
+					{
+						Name:    "edit",
+						Aliases: []string{"e"},
+						Action:  HandleEditTodo,
 					},
 					{
 						Name:    "new",
@@ -396,11 +409,86 @@ func HandleGetTodo(ctx *cli.Context) error {
 
 	fmt.Println("Ticket:", todo.Ticket)
 	if todo.DueDate != nil {
-		fmt.Println("Due Date:", todo.DueDate)
+		fmt.Println("Due Date:", todo.DueDate.Format("2006-01-02"))
 	}
 	fmt.Println("Completed:", todo.Completed)
 	fmt.Println("Subject:", todo.Subject)
-	fmt.Println("Body:", todo.Body)
+	fmt.Printf("\n%s\n", todo.Body)
+	return nil
+}
+
+func HandleEditTodo(ctx *cli.Context) error {
+	var config, _ = GetConfig()
+	var auth, _ = GetAuth()
+	var directorySettings = ReadDirectorySettingsFile(ctx)
+
+	resp, err := resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		Get(fmt.Sprintf("%s/projects/%s/todos/%s", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode() == 404 {
+		fmt.Println("Todo not found. Please check the Ticket number and project ID.")
+		return nil
+	}
+
+	var todo Todo
+	json.Unmarshal([]byte(resp.String()), &todo)
+
+	var path string
+	path, err = WriteToTempFile(todo)
+
+	if err != nil {
+		return err
+	}
+
+	editorPath := os.Getenv("EDITOR")
+	if editorPath == "" {
+		editorPath = "vim"
+	}
+
+	cmd := exec.Command(editorPath, path)
+
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+
+	updatedTodo, err := ParseTempTodoFile(todo, path)
+
+	if err != nil {
+		return err
+	}
+
+	var updateTodoRequest = UpdateTodo{}
+	updateTodoRequest.Todo = updatedTodo
+	var updatedTodoJson, _ = json.Marshal(updateTodoRequest)
+
+	resp, err = resty.New().R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		SetBody(updatedTodoJson).
+		Put(fmt.Sprintf("%s/projects/%s/todos/%s", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+
+	if err != nil {
+		return nil
+	}
+
+	if resp.StatusCode() == 200 {
+		fmt.Println("Todo updated successfully!")
+	} else {
+		fmt.Println("Error updating todo.")
+	}
+
+	_ = os.Remove(path)
+
 	return nil
 }
 
@@ -611,7 +699,6 @@ func ReadDirectorySettingsFile(ctx *cli.Context) DirectorySettings {
 	var path = filepath.Join(wd, ".cli-do-project")
 
 	if directorySettings.ProjectId != "" {
-		fmt.Println("Using project ID from flag.")
 		return directorySettings
 	}
 
@@ -623,4 +710,85 @@ func ReadDirectorySettingsFile(ctx *cli.Context) DirectorySettings {
 	}
 
 	return directorySettings
+}
+
+func ParseTempTodoFile(todo Todo, path string) (Todo, error) {
+	file, err := os.Open(path)
+
+	if err != nil {
+		return todo, err
+	}
+
+	fileScanner := bufio.NewScanner(file)
+	fileScanner.Split(bufio.ScanLines)
+	var fileLines []string
+
+	for fileScanner.Scan() {
+		fileLines = append(fileLines, fileScanner.Text())
+	}
+
+	file.Close()
+
+	var updatedTodo, headerEnd = ParseHeaders(todo, fileLines)
+
+	var newBody = strings.Join(fileLines[headerEnd:], "\n")
+	updatedTodo.Body = newBody
+
+	return updatedTodo, nil
+}
+
+func ParseHeaders(todo Todo, fileLines []string) (Todo, int) {
+	regex := regexp.MustCompile(`#\s+(Ticket|Subject|Completed|DueDate)\s*:\s+(.*)`)
+	var lineNum = 0
+
+	for _, line := range fileLines {
+		lineNum = lineNum + 1
+		if line == "" {
+			break
+		}
+
+		matches := regex.FindStringSubmatch(line)
+
+		if len(matches) <= 0 {
+			continue
+		}
+
+		if matches[1] == "Subject" {
+			todo.Subject = matches[2]
+		}
+
+		if matches[1] == "Completed" {
+			todo.Completed = matches[2] == "true"
+		}
+
+		if matches[1] == "DueDate" {
+			t, _ := time.Parse("2006-01-02", matches[2])
+			todo.DueDate = &t
+		}
+	}
+
+	return todo, lineNum
+}
+
+func WriteToTempFile(todo Todo) (string, error) {
+	var file, err = os.CreateTemp("./", ".todo-*")
+	if err != nil {
+		return "", err
+	}
+
+	var header = fmt.Sprintf("# Ticket: %d\n# Subject: %s\n# Completed: %t\n", todo.Ticket, todo.Subject, todo.Completed)
+
+	if todo.DueDate != nil {
+		header = fmt.Sprintf("%s# DueDate: %s", header, todo.DueDate.Format("2006-01-02"))
+	}
+
+	header = fmt.Sprintf("%s\n\n", header)
+
+	_, err = file.WriteString(header + todo.Body)
+
+	if err != nil {
+		return "", err
+	}
+
+	return file.Name(), nil
 }
