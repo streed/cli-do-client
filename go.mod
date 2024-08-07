@@ -1,4 +1,4 @@
-module streed/cli-do-client
+module github.com/streed/cli-do-client
 
 go 1.22.5
 
