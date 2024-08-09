@@ -169,6 +169,57 @@ func (api *Api) GetTodo(projectId string, ticket string) (Todo, error) {
 	return todo, nil
 }
 
+func (api *Api) CreateTodo(projectId string, createTodo CreateTodo) (Todo, error) {
+	var endpoint = fmt.Sprintf("%s/projects/%s/todos", api.config.Endpoint, projectId)
+	resp, err := HandlePostAuth(endpoint, createTodo, api.auth, "Todo")
+
+	if err != nil {
+		return Todo{}, err
+	}
+
+	var createdTodo Todo
+	err = json.Unmarshal(resp.Body(), &createdTodo)
+
+	if err != nil {
+		return Todo{}, err
+	}
+
+	return createdTodo, nil
+}
+
+func (api *Api) UpdateTodo(projectId string, ticket string, updateTodo UpdateTodo) error {
+	var endpoint = fmt.Sprintf("%s/projects/%s/todos/%s", api.config.Endpoint, projectId, ticket)
+	_, err := HandlePutAuth(endpoint, updateTodo, api.auth, "Todo")
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (api *Api) ArchiveTodo(projectId string, ticket string) error {
+	var endpoint = fmt.Sprintf("%s/projects/%s/todos/%s", api.config.Endpoint, projectId, ticket)
+	_, err := HandleDeleteAuth(endpoint, api.auth, "Todo")
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (api *Api) CompleteTodo(projectId string, ticket string) error {
+	var endpoint = fmt.Sprintf("%s/projects/%s/todos/%s/complete", api.config.Endpoint, projectId, ticket)
+	_, err := HandlePostAuth(endpoint, nil, api.auth, "Todo")
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func HandleResponseNotOk(resp *resty.Response, entity string) error {
 	var apiError ApiError
 	apiError.StatusCode = resp.StatusCode()
@@ -199,6 +250,21 @@ func HandlePostAuth(endpoint string, body interface{}, auth Auth, entity string)
 		SetHeader("Content-Type", "application/json").
 		SetBody(body).
 		Post(endpoint)
+
+	if err != nil {
+		return resp, err
+	}
+
+	return resp, HandleResponseNotOk(resp, entity)
+}
+
+func HandlePutAuth(endpoint string, body interface{}, auth Auth, entity string) (*resty.Response, error) {
+	client := resty.New()
+	resp, err := client.R().
+		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
+		SetHeader("Content-Type", "application/json").
+		SetBody(body).
+		Put(endpoint)
 
 	if err != nil {
 		return resp, err

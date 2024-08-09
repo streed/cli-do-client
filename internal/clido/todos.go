@@ -1,13 +1,11 @@
 package clido
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 
 	"github.com/aquilax/truncate"
-	"github.com/go-resty/resty/v2"
 	"github.com/rodaine/table"
 	"github.com/urfave/cli/v2"
 )
@@ -80,24 +78,17 @@ func HandleGetTodo(ctx *cli.Context) error {
 func HandleEditTodo(ctx *cli.Context) error {
 	var config, _ = GetConfig()
 	var auth, _ = GetAuth()
+	var api = Api{
+		config: config,
+		auth:   auth,
+	}
 	var directorySettings = ReadDirectorySettingsFile(ctx)
 
-	resp, err := resty.New().R().
-		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
-		SetHeader("Content-Type", "application/json").
-		Get(fmt.Sprintf("%s/projects/%s/todos/%s", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+	todo, err := api.GetTodo(directorySettings.ProjectId, ctx.Args().First())
 
 	if err != nil {
 		return err
 	}
-
-	if resp.StatusCode() == 404 {
-		fmt.Println("Todo not found. Please check the Ticket number and project ID.")
-		return nil
-	}
-
-	var todo Todo
-	json.Unmarshal([]byte(resp.String()), &todo)
 
 	var path string
 	path, err = WriteToTempFile(todo)
@@ -129,23 +120,14 @@ func HandleEditTodo(ctx *cli.Context) error {
 
 	var updateTodoRequest = UpdateTodo{}
 	updateTodoRequest.Todo = updatedTodo
-	var updatedTodoJson, _ = json.Marshal(updateTodoRequest)
 
-	resp, err = resty.New().R().
-		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
-		SetHeader("Content-Type", "application/json").
-		SetBody(updatedTodoJson).
-		Put(fmt.Sprintf("%s/projects/%s/todos/%s", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+	err = api.UpdateTodo(directorySettings.ProjectId, ctx.Args().First(), updateTodoRequest)
 
 	if err != nil {
 		return nil
 	}
 
-	if resp.StatusCode() == 200 {
-		fmt.Println("Todo updated successfully!")
-	} else {
-		fmt.Println("Error updating todo.")
-	}
+	fmt.Println("Todo updated successfully!")
 
 	_ = os.Remove(path)
 
@@ -155,6 +137,10 @@ func HandleEditTodo(ctx *cli.Context) error {
 func HandleCreateTodo(ctx *cli.Context) error {
 	var config, _ = GetConfig()
 	var auth, _ = GetAuth()
+	var api = Api{
+		config: config,
+		auth:   auth,
+	}
 	var directorySettings = ReadDirectorySettingsFile(ctx)
 
 	var createTodo = CreateTodo{
@@ -165,21 +151,13 @@ func HandleCreateTodo(ctx *cli.Context) error {
 		},
 	}
 
-	var createTodoJson, _ = json.Marshal(createTodo)
-
-	resp, err := resty.New().R().
-		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
-		SetHeader("Content-Type", "application/json").
-		SetBody(createTodoJson).
-		Post(fmt.Sprintf("%s/projects/%s/todos", config.Endpoint, directorySettings.ProjectId))
+	todo, err := api.CreateTodo(directorySettings.ProjectId, createTodo)
 
 	if err != nil {
 		return err
 	}
 
-	if resp.StatusCode() == 200 {
-		fmt.Println("Todo created successfully!")
-	}
+	fmt.Printf("Todo created successfully with ticket: %d\n", todo.Ticket)
 
 	return nil
 }
@@ -187,23 +165,19 @@ func HandleCreateTodo(ctx *cli.Context) error {
 func HandleArchiveTodo(ctx *cli.Context) error {
 	var config, _ = GetConfig()
 	var auth, _ = GetAuth()
+	var api = Api{
+		config: config,
+		auth:   auth,
+	}
 	var directorySettings = ReadDirectorySettingsFile(ctx)
 
-	resp, err := resty.New().R().
-		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
-		Delete(fmt.Sprintf("%s/projects/%s/todos/%s", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+	err := api.ArchiveTodo(directorySettings.ProjectId, ctx.Args().First())
 
 	if err != nil {
 		return err
 	}
 
-	if resp.StatusCode() == 404 {
-		fmt.Println("Todo not found. Please check the Ticket number and project ID.")
-	}
-
-	if resp.StatusCode() == 200 {
-		fmt.Println("Todo archived successfully!")
-	}
+	fmt.Println("Todo archived successfully!")
 
 	return nil
 }
@@ -211,24 +185,19 @@ func HandleArchiveTodo(ctx *cli.Context) error {
 func HandleCompleteTodo(ctx *cli.Context) error {
 	var config, _ = GetConfig()
 	var auth, _ = GetAuth()
+	var api = Api{
+		config: config,
+		auth:   auth,
+	}
 	var directorySettings = ReadDirectorySettingsFile(ctx)
 
-	resp, err := resty.New().R().
-		SetHeader("Authorization", fmt.Sprintf("Bearer %s", auth.AccessToken)).
-		SetHeader("Content-Type", "application/json").
-		Post(fmt.Sprintf("%s/projects/%s/todos/%s/complete", config.Endpoint, directorySettings.ProjectId, ctx.Args().First()))
+	err := api.CompleteTodo(directorySettings.ProjectId, ctx.Args().First())
 
 	if err != nil {
 		return nil
 	}
 
-	if resp.StatusCode() == 404 {
-		fmt.Println("Todo not found. Please check the Ticket number and project ID.")
-	}
-
-	if resp.StatusCode() == 200 {
-		fmt.Println("Todo completed successfully!")
-	}
+	fmt.Println("Todo completed successfully!")
 
 	return nil
 }
